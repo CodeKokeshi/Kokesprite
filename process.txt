@@ -1,0 +1,9 @@
+1. A canvas where we can freely draw pixel by pixel.
+2. A brush that is resizable from 1px to 256px.
+3. An eraser.
+4. A fill / bucket tool.
+5. Pixel perfect toggle
+6. Pallete Selection area.
+7. When creating new files. We can choose the dimension of the canvas (e.g 128x128 or 16x128) like 2 fields for height and width
+8. Symmetry toggle.
+9. Layers.
