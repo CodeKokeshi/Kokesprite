@@ -8,12 +8,13 @@ LIGHT_GRAY = (200, 200, 200)
 
 
 class UI:
-    def __init__(self, x, y, width, height, font):
+    def __init__(self, x, y, width, height, font, icon_manager=None):
         self.x = x
         self.y = y
         self.width = width
         self.height = height
         self.font = font
+        self.icon_manager = icon_manager
         # Options bar: size/shape and pixel-perfect; tools moved to right panel
         self.tool_buttons = {}
         self.size_controls = self.setup_size_controls()
@@ -132,28 +133,44 @@ class UI:
         # Size controls
         current_tool = tool_manager.get_current_tool()
         size_controls_info = [
-            ('minus', self.size_controls['minus'], "-"),
-            ('plus', self.size_controls['plus'], "+"),
+            ('minus', self.size_controls['minus'], "minus"),
+            ('plus', self.size_controls['plus'], "plus"),
         ]
-        for name, rect, text_content in size_controls_info:
+        for name, rect, icon_name in size_controls_info:
             pygame.draw.rect(screen, WHITE, rect)
             pygame.draw.rect(screen, BLACK, rect, 1)
-            text = self.font.render(text_content, True, BLACK)
-            text_rect = text.get_rect(center=rect.center)
-            screen.blit(text, text_rect)
+            if self.icon_manager:
+                self.icon_manager.render_icon(screen, icon_name, rect.centerx, rect.centery, center=True)
+            else:
+                # Fallback to text
+                text_fallback = "-" if icon_name == "minus" else "+"
+                text = self.font.render(text_fallback, True, BLACK)
+                text_rect = text.get_rect(center=rect.center)
+                screen.blit(text, text_rect)
 
         # Option controls
+        shape_icon = "square" if current_tool.shape == "square" else "circle"
         option_controls_info = [
-            ('shape', self.size_controls['shape'], current_tool.shape.capitalize()),
-            ('pixel_perfect', self.size_controls['pixel_perfect'], "Pixel Perfect"),
+            ('shape', self.size_controls['shape'], shape_icon),
+            ('pixel_perfect', self.size_controls['pixel_perfect'], None),  # No icon for pixel perfect yet
         ]
-        for name, rect, text_content in option_controls_info:
+        for name, rect, icon_name in option_controls_info:
             color = (200, 255, 200) if name == 'pixel_perfect' and pixel_perfect else WHITE
             pygame.draw.rect(screen, color, rect)
             pygame.draw.rect(screen, BLACK, rect, 1)
-            text = self.font.render(text_content, True, BLACK)
-            text_rect = text.get_rect(center=rect.center)
-            screen.blit(text, text_rect)
+            
+            if icon_name and self.icon_manager:
+                # Render shape icon
+                self.icon_manager.render_icon(screen, icon_name, rect.centerx, rect.centery, center=True)
+            else:
+                # Fallback to text for pixel perfect or if no icon manager
+                if name == 'pixel_perfect':
+                    text_content = "PIXEL"
+                else:
+                    text_content = "SQR" if current_tool.shape == "square" else "CIR"
+                text = self.font.render(text_content, True, BLACK)
+                text_rect = text.get_rect(center=rect.center)
+                screen.blit(text, text_rect)
 
         # Size slider
         slider_rect = self.size_controls['slider']

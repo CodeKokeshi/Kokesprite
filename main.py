@@ -4,10 +4,23 @@ from canvas import PixelCanvas
 from tools import ToolManager
 from ui import UI
 from palette import Palette
+from icons import IconManager
+from undo import UndoRedoManager, DrawCommand, FillCommand
+from file_manager import FileManager
+from symmetry import SymmetryManager
+from panels import LayersPanel, StatusBar
+from shortcuts import KeyboardShortcuts
+from floating_layers import FloatingLayersWindow
 try:
     # Optional: use a system file dialog for selecting PNGs on the Home screen
     import tkinter as tk
-    from tkinter import filedialog, colorchooser
+    from tkinter import filedialog
+    HAS_TKINTER = True
+except ImportError:
+    HAS_TKINTER = False
+
+try:
+    from tkinter import colorchooser
 except Exception:
     tk = None
     filedialog = None
@@ -41,7 +54,7 @@ def _apply_tool_at_pixel_cell(canvas, tool, px, py):
     screen_y = canvas.y + py * canvas.pixel_size + canvas.pixel_size // 2
     tool.apply(canvas, screen_x, screen_y)
 
-def draw_pixel_perfect_line(canvas, tool, x1, y1, x2, y2):
+def draw_pixel_perfect_line(canvas, tool, x1, y1, x2, y2, changes_dict=None):
     """Draw a pixel perfect line using Bresenham-like algorithm for clean diagonals"""
     # Convert screen coordinates to canvas pixel coordinates
     coords1 = canvas.get_pixel_coords(x1, y1)
@@ -66,24 +79,115 @@ def draw_pixel_perfect_line(canvas, tool, x1, y1, x2, y2):
         # More horizontal movement
         error = dx / 2
         while x != px2:
-            _apply_tool_at_pixel_cell(canvas, tool, x, y)
+            if changes_dict is not None:
+                # Apply brush size effect for line
+                pixels = tool.get_affected_pixels(x, y)
+                for px, py in pixels:
+                    if canvas.in_bounds(px, py):
+                        apply_tool_with_undo_tracking_at_pixel(canvas, tool, px, py, changes_dict)
+            else:
+                pixels = tool.get_affected_pixels(x, y)
+                for px, py in pixels:
+                    if canvas.in_bounds(px, py):
+                        _apply_tool_at_pixel_cell(canvas, tool, px, py)
             error -= dy
             if error < 0:
                 y += y_step
                 error += dx
             x += x_step
-        _apply_tool_at_pixel_cell(canvas, tool, px2, py2)  # Draw final pixel
+        # Draw final pixel
+        if changes_dict is not None:
+            pixels = tool.get_affected_pixels(px2, py2)
+            for px, py in pixels:
+                if canvas.in_bounds(px, py):
+                    apply_tool_with_undo_tracking_at_pixel(canvas, tool, px, py, changes_dict)
+        else:
+            pixels = tool.get_affected_pixels(px2, py2)
+            for px, py in pixels:
+                if canvas.in_bounds(px, py):
+                    _apply_tool_at_pixel_cell(canvas, tool, px, py)
     else:
         # More vertical movement
         error = dy / 2
         while y != py2:
-            _apply_tool_at_pixel_cell(canvas, tool, x, y)
+            if changes_dict is not None:
+                pixels = tool.get_affected_pixels(x, y)
+                for px, py in pixels:
+                    if canvas.in_bounds(px, py):
+                        apply_tool_with_undo_tracking_at_pixel(canvas, tool, px, py, changes_dict)
+            else:
+                pixels = tool.get_affected_pixels(x, y)
+                for px, py in pixels:
+                    if canvas.in_bounds(px, py):
+                        _apply_tool_at_pixel_cell(canvas, tool, px, py)
             error -= dx
             if error < 0:
                 x += x_step
                 error += dy
             y += y_step
-        _apply_tool_at_pixel_cell(canvas, tool, px2, py2)  # Draw final pixel
+        # Draw final pixel
+        if changes_dict is not None:
+            pixels = tool.get_affected_pixels(px2, py2)
+            for px, py in pixels:
+                if canvas.in_bounds(px, py):
+                    apply_tool_with_undo_tracking_at_pixel(canvas, tool, px, py, changes_dict)
+        else:
+            pixels = tool.get_affected_pixels(px2, py2)
+            for px, py in pixels:
+                if canvas.in_bounds(px, py):
+                    _apply_tool_at_pixel_cell(canvas, tool, px, py)
+
+
+
+def apply_tool_with_undo_tracking(canvas, tool, mouse_x, mouse_y, changes_dict):
+    """Apply tool and track changes for undo"""
+    coords = canvas.get_pixel_coords(mouse_x, mouse_y)
+    if not coords:
+        return
+    cx, cy = coords
+    
+    if tool.name == "Fill":
+        # For fill, we need to track all affected pixels
+        old_pixels = canvas.pixels.copy()
+        tool.apply(canvas, mouse_x, mouse_y)
+        # Record all changes
+        new_pixels = canvas.pixels.copy()
+        for (x, y), new_color in new_pixels.items():
+            if (x, y) not in old_pixels or old_pixels[(x, y)] != new_color:
+                record_pixel_change(changes_dict, canvas, x, y, new_color)
+        # Also record erased pixels
+        for (x, y), old_color in old_pixels.items():
+            if (x, y) not in new_pixels:
+                record_pixel_change(changes_dict, canvas, x, y, None)
+    else:
+        # For brush/eraser, track individual pixels
+        pixels = tool.get_affected_pixels(cx, cy)
+        for px, py in pixels:
+            if canvas.in_bounds(px, py):
+                if tool.name == "Brush":
+                    record_pixel_change(changes_dict, canvas, px, py, canvas.current_color)
+                    canvas.set_pixel(px, py, canvas.current_color)
+                elif tool.name == "Eraser":
+                    record_pixel_change(changes_dict, canvas, px, py, None)
+                    canvas.erase_pixel(px, py)
+
+def apply_tool_with_undo_tracking_at_pixel(canvas, tool, px, py, changes_dict):
+    """Apply tool with undo tracking at pixel coordinates"""
+    if not canvas.in_bounds(px, py):
+        return
+        
+    if tool.name == "Brush":
+        record_pixel_change(changes_dict, canvas, px, py, canvas.current_color)
+        canvas.set_pixel(px, py, canvas.current_color)
+    elif tool.name == "Eraser":
+        record_pixel_change(changes_dict, canvas, px, py, None)
+        canvas.erase_pixel(px, py)
+
+def record_pixel_change(changes_dict, canvas, x, y, new_color):
+    """Record a pixel change for undo purposes"""
+    if (x, y) not in changes_dict:
+        old_color = canvas.pixels.get((x, y), None)
+        changes_dict[(x, y)] = (old_color, new_color)
 
 def main():
     # Create the display window
@@ -92,8 +196,17 @@ def main():
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 24)
 
+    # Initialize icon manager
+    icon_manager = IconManager(icon_size=20)
+    
+    # Initialize managers
+    file_manager = FileManager()
+    symmetry_manager = SymmetryManager()
+    floating_layers_window = None  # Will be created when needed
+
     # Scene management: 'home' | 'new_file' | 'editor'
     scene = 'home'
+    show_help = False  # For keyboard shortcuts overlay
 
     # Home scene UI
     home_title_font = pygame.font.SysFont(None, 48)
@@ -118,11 +231,15 @@ def main():
     tool_manager = None
     ui = None
     palette = None
+    undo_manager = None
+    layers_panel = None
+    status_bar = None
     # Layout rects (computed when entering editor)
     left_rect = None
     right_rect = None
     holder_rect = None
     options_rect = None
+    bottom_rect = None
     # Scroll/zoom
     scroll_x = 0
     scroll_y = 0
@@ -140,6 +257,12 @@ def main():
     size_input_text = "1"
     previous_valid_size = "1"
     pixel_perfect = False
+    # Tool mode state
+    current_tool_mode = "normal"  # "normal", "line_preview", "rect_preview"
+    preview_start_pos = None  # Starting position for line/rect preview
+    
+    # Undo tracking
+    current_stroke_changes = {}  # Track changes during current drawing operation
 
     running = True
     while running:
@@ -191,9 +314,17 @@ def main():
 
                         canvas = PixelCanvas(canvas_screen_w, canvas_screen_h, PIXEL_SIZE, 0, 0)
                         tool_manager = ToolManager()
-                        ui = UI(0, 0, WINDOW_WIDTH, TOP_OPTIONS_H, font)
+                        ui = UI(0, 0, WINDOW_WIDTH, TOP_OPTIONS_H, font, icon_manager)
                         palette = Palette(10, TOP_OPTIONS_H + 10)
-
+                        undo_manager = UndoRedoManager()
+                        
+                        # Make layers panel more flexible - position it better
+                        layers_panel = LayersPanel(10, TOP_OPTIONS_H + 250, LEFT_PALETTE_W - 20, 300, font)
+                        status_bar = StatusBar(0, WINDOW_HEIGHT - 30, WINDOW_WIDTH, 30, font)
+                        
+                        # Update symmetry manager with canvas size
+                        symmetry_manager.set_canvas_center(canvas.canvas_width, canvas.canvas_height)
+                        
                         # Reset editor state
                         drawing = False
                         last_pos = None
@@ -202,6 +333,7 @@ def main():
                         size_input_text = "1"
                         previous_valid_size = "1"
                         pixel_perfect = False
+                        current_tool_mode = "normal"
 
                         scene = 'editor'
                     elif back_btn_rect.collidepoint(mouse_pos):
@@ -220,8 +352,9 @@ def main():
                         canvas_screen_h = h_cells * PIXEL_SIZE
                         canvas = PixelCanvas(canvas_screen_w, canvas_screen_h, PIXEL_SIZE, 0, 0)
                         tool_manager = ToolManager()
-                        ui = UI(0, 0, WINDOW_WIDTH, TOP_OPTIONS_H, font)
+                        ui = UI(0, 0, WINDOW_WIDTH, TOP_OPTIONS_H, font, icon_manager)
                         palette = Palette(10, TOP_OPTIONS_H + 10)
+                        undo_manager = UndoRedoManager()
                         drawing = False
                         last_pos = None
                         slider_dragging = False
@@ -304,23 +437,140 @@ def main():
                         size_input_active = ui_result['input_active']
                         pixel_perfect = ui_result['pixel_perfect']
 
+                        # Handle layers panel interactions
+                        if layers_panel and canvas:
+                            layer_result = layers_panel.handle_click(mouse_pos, canvas.layer_manager)
+                            if layer_result["action"] == "new_layer":
+                                canvas.layer_manager.add_layer()
+                            elif layer_result["action"] == "duplicate_layer":
+                                canvas.layer_manager.duplicate_layer()
+                            elif layer_result["action"] == "delete_layer":
+                                if len(canvas.layer_manager.layers) > 1:  # Keep at least one layer
+                                    canvas.layer_manager.remove_layer(canvas.layer_manager.current_layer_index)
+                            elif layer_result["action"] == "merge_down":
+                                canvas.layer_manager.merge_down(canvas.layer_manager.current_layer_index)
+                            elif layer_result["action"] in ["toggle_visibility", "select_layer"]:
+                                pass  # Already handled in the panel
+
                         # If no UI interaction and mouse is inside holder viewport, start drawing
                         if not any([ui_result['tool_changed'], ui_result['size_changed'],
                                     ui_result['shape_changed'], ui_result['slider_dragging'],
                                     ui_result['input_active'], ui_result['pixel_perfect_changed']]):
                             if holder_rect.collidepoint(mouse_pos):
                                 current_tool = tool_manager.get_current_tool()
-                                # For fill tool, apply only once on click; do not start drag drawing
+                                
+                                # Handle different tool types
                                 if tool_manager.current_tool_name == "fill":
-                                    current_tool.apply(canvas, mouse_pos[0], mouse_pos[1])
-                                else:
+                                    current_stroke_changes = {}
+                                    apply_tool_with_undo_tracking(canvas, current_tool, mouse_pos[0], mouse_pos[1], current_stroke_changes)
+                                    if current_stroke_changes:
+                                        command = FillCommand(canvas, current_stroke_changes.copy())
+                                        undo_manager.execute_command(command)
+                                elif tool_manager.current_tool_name == "eyedropper":
+                                    # Pick color from canvas
+                                    coords = canvas.get_pixel_coords(mouse_pos[0], mouse_pos[1])
+                                    if coords:
+                                        cx, cy = coords
+                                        picked_color = canvas.get_pixel_color(cx, cy)
+                                        if picked_color and palette:
+                                            palette.set_current_color(picked_color)
+                                            canvas.current_color = picked_color
+                                elif tool_manager.current_tool_name == "line":
+                                    # Start line preview mode
+                                    current_tool_mode = "line_preview"
+                                    preview_start_pos = mouse_pos
                                     drawing = True
-                                    current_tool.apply(canvas, mouse_pos[0], mouse_pos[1])
+                                elif tool_manager.current_tool_name == "rectangle":
+                                    # Start rectangle preview mode
+                                    current_tool_mode = "rectangle_preview"
+                                    preview_start_pos = mouse_pos
+                                    drawing = True
+                                else:
+                                    # Normal brush/eraser drawing
+                                    drawing = True
+                                    current_stroke_changes = {}
+                                    apply_tool_with_undo_tracking(canvas, current_tool, mouse_pos[0], mouse_pos[1], current_stroke_changes)
                                     last_pos = mouse_pos
 
                 elif event.type == pygame.MOUSEBUTTONUP:
-                    if event.button == 1:  # Left mouse button
-                        drawing = False
+                    if event.button == 1:  # Left mouse button released
+                        if drawing:
+                            if current_tool_mode in ["line_preview", "rectangle_preview"]:
+                                # Finalize line or rectangle
+                                if preview_start_pos:
+                                    current_tool = tool_manager.get_current_tool()
+                                    current_stroke_changes = {}
+                                    
+                                    if current_tool_mode == "line_preview":
+                                        # Draw line from start to current position
+                                        draw_pixel_perfect_line(canvas, current_tool, 
+                                                             preview_start_pos[0], preview_start_pos[1],
+                                                             mouse_pos[0], mouse_pos[1], current_stroke_changes)
+                                    elif current_tool_mode == "rectangle_preview":
+                                        # Draw rectangle from start to current position
+                                        coords1 = canvas.get_pixel_coords(preview_start_pos[0], preview_start_pos[1])
+                                        coords2 = canvas.get_pixel_coords(mouse_pos[0], mouse_pos[1])
+                                        if coords1 and coords2:
+                                            x1, y1 = coords1
+                                            x2, y2 = coords2
+                                            # Ensure proper ordering
+                                            left = min(x1, x2)
+                                            right = max(x1, x2)
+                                            top = min(y1, y2)
+                                            bottom = max(y1, y2)
+                                            
+                                            # Get brush size for thickness
+                                            brush_size = current_tool.size
+                                            
+                                            if hasattr(current_tool, 'fill_mode') and current_tool.fill_mode == "fill":
+                                                # Fill the entire rectangle
+                                                for y in range(top, bottom + 1):
+                                                    for x in range(left, right + 1):
+                                                        # Apply brush size effect
+                                                        pixels = current_tool.get_affected_pixels(x, y)
+                                                        for px, py in pixels:
+                                                            if canvas.in_bounds(px, py):
+                                                                apply_tool_with_undo_tracking_at_pixel(canvas, current_tool, px, py, current_stroke_changes)
+                                            else:
+                                                # Draw hollow rectangle with brush thickness
+                                                # Top and bottom edges
+                                                for x in range(left, right + 1):
+                                                    pixels_top = current_tool.get_affected_pixels(x, top)
+                                                    pixels_bottom = current_tool.get_affected_pixels(x, bottom)
+                                                    for px, py in pixels_top:
+                                                        if canvas.in_bounds(px, py):
+                                                            apply_tool_with_undo_tracking_at_pixel(canvas, current_tool, px, py, current_stroke_changes)
+                                                    for px, py in pixels_bottom:
+                                                        if canvas.in_bounds(px, py):
+                                                            apply_tool_with_undo_tracking_at_pixel(canvas, current_tool, px, py, current_stroke_changes)
+                                                # Left and right edges (excluding corners already drawn)
+                                                for y in range(top + 1, bottom):
+                                                    pixels_left = current_tool.get_affected_pixels(left, y)
+                                                    pixels_right = current_tool.get_affected_pixels(right, y)
+                                                    for px, py in pixels_left:
+                                                        if canvas.in_bounds(px, py):
+                                                            apply_tool_with_undo_tracking_at_pixel(canvas, current_tool, px, py, current_stroke_changes)
+                                                    for px, py in pixels_right:
+                                                        if canvas.in_bounds(px, py):
+                                                            apply_tool_with_undo_tracking_at_pixel(canvas, current_tool, px, py, current_stroke_changes)
+                                    
+                                    # Save as command for undo
+                                    if current_stroke_changes:
+                                        command = DrawCommand(canvas, current_stroke_changes.copy())
+                                        undo_manager.execute_command(command)
+                                    
+                                    # Reset preview mode
+                                    current_tool_mode = "normal"
+                                    preview_start_pos = None
+                            else:
+                                # Normal drawing completion
+                                if current_stroke_changes:
+                                    command = DrawCommand(canvas, current_stroke_changes.copy())
+                                    undo_manager.execute_command(command)
+                                    current_stroke_changes = {}
+                            drawing = False
+                        else:
+                            drawing = False
                         slider_dragging = False
                         last_pos = None
                         h_drag = False
@@ -364,7 +614,7 @@ def main():
 
                             if pixel_perfect:
                                 # Pixel perfect mode: create clean diagonal steps
-                                draw_pixel_perfect_line(canvas, current_tool, x1, y1, x2, y2)
+                                draw_pixel_perfect_line(canvas, current_tool, x1, y1, x2, y2, current_stroke_changes)
                             else:
                                 # Normal interpolated drawing
                                 dx = x2 - x1
@@ -372,12 +622,12 @@ def main():
                                 steps = max(abs(dx), abs(dy))
 
                                 if steps == 0:
-                                    current_tool.apply(canvas, x2, y2)
+                                    apply_tool_with_undo_tracking(canvas, current_tool, x2, y2, current_stroke_changes)
                                 else:
                                     for i in range(steps + 1):
                                         x = int(x1 + (dx * i) / steps)
                                         y = int(y1 + (dy * i) / steps)
-                                        current_tool.apply(canvas, x, y)
+                                        apply_tool_with_undo_tracking(canvas, current_tool, x, y, current_stroke_changes)
                         last_pos = mouse_pos
 
                 elif event.type == pygame.MOUSEWHEEL:
@@ -448,6 +698,18 @@ def main():
                         elif event.unicode.isdigit() and len(size_input_text) < 3:
                             size_input_text += event.unicode
                     else:
+                        # Check for undo/redo shortcuts
+                        mods = pygame.key.get_mods()
+                        ctrl = mods & pygame.KMOD_CTRL
+                        shift = mods & pygame.KMOD_SHIFT
+                        
+                        if ctrl and event.key == pygame.K_z and not shift:
+                            # Ctrl+Z - Undo
+                            undo_manager.undo()
+                        elif ctrl and ((event.key == pygame.K_y) or (shift and event.key == pygame.K_z)):
+                            # Ctrl+Y or Ctrl+Shift+Z - Redo
+                            undo_manager.redo()
+                        
                         # Tool shortcuts
                         current_tool = tool_manager.get_current_tool()
                         if event.key == pygame.K_LEFTBRACKET:  # '['
@@ -469,16 +731,76 @@ def main():
                             tool_manager.set_tool("eraser")
                         elif event.key == pygame.K_f:  # fill tool
                             tool_manager.set_tool("fill")
+                        elif event.key == pygame.K_l:  # line tool
+                            tool_manager.set_tool("line")
+                        elif event.key == pygame.K_r:  # rectangle tool
+                            tool_manager.set_tool("rectangle")
+                        elif event.key == pygame.K_i:  # eyedropper tool
+                            tool_manager.set_tool("eyedropper")
                         elif event.key == pygame.K_p:  # toggle pixel perfect
                             pixel_perfect = not pixel_perfect
+                        elif event.key == pygame.K_g:  # toggle grid
+                            canvas.toggle_grid()
+                        elif event.key == pygame.K_h:  # toggle symmetry modes or help
+                            if shift:
+                                symmetry_manager.toggle_horizontal_symmetry()
+                            else:
+                                show_help = not show_help
+                        elif event.key == pygame.K_v:  # toggle vertical symmetry
+                            symmetry_manager.toggle_vertical_symmetry()
+                        elif event.key == pygame.K_d:  # toggle diagonal symmetry or duplicate layer
+                            if ctrl:
+                                if canvas and canvas.layer_manager:
+                                    canvas.layer_manager.duplicate_layer()
+                            else:
+                                symmetry_manager.toggle_diagonal_symmetry()
+                        elif event.key == pygame.K_n:  # new layer
+                            if ctrl and canvas and canvas.layer_manager:
+                                canvas.layer_manager.add_layer()
+                        elif event.key == pygame.K_DELETE:  # delete layer
+                            if canvas and canvas.layer_manager and len(canvas.layer_manager.layers) > 1:
+                                canvas.layer_manager.remove_layer(canvas.layer_manager.current_layer_index)
+                        elif event.key == pygame.K_F2:  # toggle floating layers window
+                            if canvas:
+                                if floating_layers_window and floating_layers_window.running:
+                                    floating_layers_window.close_window()
+                                    floating_layers_window = None
+                                else:
+                                    floating_layers_window = FloatingLayersWindow(font=font)
+                                    floating_layers_window.create_window()
+                                    floating_layers_window.set_layer_manager(canvas.layer_manager)
+                        elif event.key == pygame.K_t:  # toggle rectangle fill mode
+                            if tool_manager.current_tool_name == "rectangle":
+                                rect_tool = tool_manager.get_current_tool()
+                                rect_tool.toggle_fill_mode()
                         elif event.key in (pygame.K_EQUALS, pygame.K_PLUS):
                             # Zoom in
                             pygame.event.post(pygame.event.Event(pygame.MOUSEWHEEL, {'y': 1}))
                         elif event.key == pygame.K_MINUS:
                             pygame.event.post(pygame.event.Event(pygame.MOUSEWHEEL, {'y': -1}))
+                        elif event.key == pygame.K_ESCAPE:
+                            show_help = False  # Close help if open
 
         # Clear screen
         screen.fill(GRAY)
+        
+        # Handle floating layers window
+        if floating_layers_window and floating_layers_window.running:
+            result = floating_layers_window.handle_events()
+            if result["action"] == "close":
+                floating_layers_window = None
+            elif result["action"] == "new_layer" and canvas:
+                canvas.layer_manager.add_layer()
+            elif result["action"] == "duplicate_layer" and canvas:
+                canvas.layer_manager.duplicate_layer()
+            elif result["action"] == "delete_layer" and canvas:
+                if len(canvas.layer_manager.layers) > 1:
+                    canvas.layer_manager.remove_layer(canvas.layer_manager.current_layer_index)
+            elif result["action"] == "merge_down" and canvas:
+                canvas.layer_manager.merge_down(canvas.layer_manager.current_layer_index)
+            
+            # Render the floating window
+            floating_layers_window.render()
 
     # Scene-specific rendering
         if scene == 'home':
@@ -540,9 +862,17 @@ def main():
             # Compute layout rects if needed
             if not options_rect:
                 options_rect = pygame.Rect(0, 0, WINDOW_WIDTH, TOP_OPTIONS_H)
-                left_rect = pygame.Rect(0, TOP_OPTIONS_H, LEFT_PALETTE_W, WINDOW_HEIGHT - TOP_OPTIONS_H)
-                right_rect = pygame.Rect(WINDOW_WIDTH - RIGHT_TOOLS_W, TOP_OPTIONS_H, RIGHT_TOOLS_W, WINDOW_HEIGHT - TOP_OPTIONS_H)
-                holder_rect = pygame.Rect(LEFT_PALETTE_W, TOP_OPTIONS_H, WINDOW_WIDTH - LEFT_PALETTE_W - RIGHT_TOOLS_W, WINDOW_HEIGHT - TOP_OPTIONS_H)
+                left_rect = pygame.Rect(0, TOP_OPTIONS_H, LEFT_PALETTE_W, WINDOW_HEIGHT - TOP_OPTIONS_H - 30)
+                right_rect = pygame.Rect(WINDOW_WIDTH - RIGHT_TOOLS_W, TOP_OPTIONS_H, RIGHT_TOOLS_W, WINDOW_HEIGHT - TOP_OPTIONS_H - 30)
+                holder_rect = pygame.Rect(LEFT_PALETTE_W, TOP_OPTIONS_H, WINDOW_WIDTH - LEFT_PALETTE_W - RIGHT_TOOLS_W, WINDOW_HEIGHT - TOP_OPTIONS_H - 30)
+                bottom_rect = pygame.Rect(0, WINDOW_HEIGHT - 30, WINDOW_WIDTH, 30)
+                
+                # Update layers panel size to fit better in left panel
+                if layers_panel:
+                    # Position after palette with some spacing
+                    layers_y = TOP_OPTIONS_H + 200  # After palette
+                    layers_height = left_rect.height - 210  # Use remaining space
+                    layers_panel.update_size(10, layers_y, LEFT_PALETTE_W - 20, layers_height)
 
             # Options bar
             ui.x = 10
@@ -559,33 +889,59 @@ def main():
                 palette.y = left_rect.y + 10
                 palette.render(screen)
                 # Show current color above palette
-                color_display = pygame.Rect(left_rect.x + 10, left_rect.y + left_rect.height - 30, 50, 20)
+                color_display = pygame.Rect(left_rect.x + 10, left_rect.y + left_rect.height - 60, 80, 40)
                 pygame.draw.rect(screen, palette.current_color, color_display)
                 pygame.draw.rect(screen, BLACK, color_display, 2)
+                
+                # Add text label
+                color_text = font.render("Current Color", True, BLACK)
+                screen.blit(color_text, (left_rect.x + 10, left_rect.y + left_rect.height - 100))
+            
+            # Add floating layers hint
+            if not floating_layers_window or not floating_layers_window.running:
+                hint_text = font.render("Press F2 for Layers Panel", True, BLACK)
+                screen.blit(hint_text, (left_rect.x + 10, left_rect.y + left_rect.height - 30))
 
             # Right tools panel
             pygame.draw.rect(screen, (235, 235, 235), right_rect)
             pygame.draw.rect(screen, BLACK, right_rect, 1)
-            # Tool buttons stacked vertically
-            tool_labels = [("brush", "Brush"), ("eraser", "Eraser"), ("fill", "Fill")]
+            # Tool buttons stacked vertically with icons
+            tool_labels = [("brush", "pencil"), ("eraser", "eraser"), ("fill", "paint-bucket"), 
+                          ("line", "line"), ("rectangle", "rectangle"), ("eyedropper", "eyedropper")]
             tool_btns = {}
             ty = right_rect.y + 10
-            for name, label in tool_labels:
+            for name, icon_name in tool_labels:
                 rect = pygame.Rect(right_rect.x + 10, ty, right_rect.width - 20, 36)
                 tool_btns[name] = rect
                 color = (200, 200, 255) if tool_manager.current_tool_name == name else WHITE
                 pygame.draw.rect(screen, color, rect)
                 pygame.draw.rect(screen, BLACK, rect, 1)
-                txt = font.render(label, True, BLACK)
-                txt_rect = txt.get_rect(center=rect.center)
-                screen.blit(txt, txt_rect)
+                # Render icon centered in button
+                icon_manager.render_icon(screen, icon_name, rect.centerx, rect.centery, center=True)
                 ty += 46
+
+            # Add rectangle fill mode toggle
+            if tool_manager.current_tool_name == "rectangle":
+                rect_tool = tool_manager.get_current_tool()
+                fill_rect = pygame.Rect(right_rect.x + 10, ty, right_rect.width - 20, 30)
+                fill_color = (200, 255, 200) if rect_tool.fill_mode == "fill" else (255, 200, 200)
+                pygame.draw.rect(screen, fill_color, fill_rect)
+                pygame.draw.rect(screen, BLACK, fill_rect, 1)
+                fill_text = font.render(f"Mode: {rect_tool.fill_mode.title()}", True, BLACK)
+                text_rect = fill_text.get_rect(center=fill_rect.center)
+                screen.blit(fill_text, text_rect)
+                tool_btns["rect_fill_toggle"] = fill_rect
 
             # Handle clicks on tool buttons (simple re-check when mouse is pressed)
             if pygame.mouse.get_pressed(num_buttons=3)[0]:
                 for name, rect in tool_btns.items():
                     if rect.collidepoint(mouse_pos):
-                        tool_manager.set_tool(name)
+                        if name == "rect_fill_toggle":
+                            if tool_manager.current_tool_name == "rectangle":
+                                rect_tool = tool_manager.get_current_tool()
+                                rect_tool.toggle_fill_mode()
+                        else:
+                            tool_manager.set_tool(name)
 
             # Canvas holder (outer canvas that contains the drawing canvas)
             pygame.draw.rect(screen, (250, 250, 250), holder_rect)
@@ -600,6 +956,34 @@ def main():
             prev_clip = screen.get_clip()
             screen.set_clip(holder_rect)
             screen.blit(surface, (canvas.x, canvas.y))
+            
+            # Draw preview for line/rectangle tools
+            if current_tool_mode in ["line_preview", "rectangle_preview"] and preview_start_pos and drawing:
+                # Draw preview overlay
+                current_mouse = pygame.mouse.get_pos()
+                preview_color = (255, 255, 0, 128)  # Yellow preview
+                
+                if current_tool_mode == "line_preview":
+                    # Draw line preview
+                    start_screen = (preview_start_pos[0] - scroll_x, preview_start_pos[1] - scroll_y)
+                    end_screen = (current_mouse[0] - scroll_x, current_mouse[1] - scroll_y)
+                    pygame.draw.line(screen, preview_color[:3], start_screen, end_screen, 2)
+                elif current_tool_mode == "rectangle_preview":
+                    # Draw rectangle preview
+                    start_x = preview_start_pos[0] - scroll_x
+                    start_y = preview_start_pos[1] - scroll_y
+                    end_x = current_mouse[0] - scroll_x
+                    end_y = current_mouse[1] - scroll_y
+                    
+                    left = min(start_x, end_x)
+                    top = min(start_y, end_y)
+                    width = abs(end_x - start_x)
+                    height = abs(end_y - start_y)
+                    
+                    if width > 0 and height > 0:
+                        preview_rect = pygame.Rect(left, top, width, height)
+                        pygame.draw.rect(screen, preview_color[:3], preview_rect, 2)
+            
             screen.set_clip(prev_clip)
 
             # Scrollbars (appear when content exceeds viewport)
@@ -628,6 +1012,14 @@ def main():
                 thumb_v_rect = pygame.Rect(track_v.x, thumb_y, sb_thickness, thumb_hg)
                 pygame.draw.rect(screen, (180, 180, 180), thumb_v_rect)
                 pygame.draw.rect(screen, BLACK, thumb_v_rect, 1)
+            
+            # Status bar
+            if status_bar:
+                status_bar.render(screen, tool_manager, canvas, symmetry_manager, canvas.layer_manager)
+            
+            # Help overlay
+            if show_help:
+                KeyboardShortcuts.render_help_overlay(screen, font, font)
 
         # Update display
         pygame.display.flip()

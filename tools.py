@@ -185,12 +185,241 @@ class FillTool(Tool):
             screen.blit(preview_surface, rect.topleft)
 
 
+class LineTool(Tool):
+    def __init__(self, size=1, shape="square"):
+        super().__init__("Line", size, shape)
+        self.start_pos = None
+        self.preview_pixels = []
+
+    def start_line(self, canvas, mouse_x, mouse_y):
+        """Start drawing a line"""
+        coords = canvas.get_pixel_coords(mouse_x, mouse_y)
+        if coords:
+            self.start_pos = coords
+            self.preview_pixels = []
+
+    def update_preview(self, canvas, mouse_x, mouse_y):
+        """Update line preview"""
+        if not self.start_pos:
+            return
+        
+        coords = canvas.get_pixel_coords(mouse_x, mouse_y)
+        if not coords:
+            return
+        
+        end_x, end_y = coords
+        start_x, start_y = self.start_pos
+        
+        # Use Bresenham's line algorithm
+        self.preview_pixels = self._get_line_pixels(start_x, start_y, end_x, end_y)
+
+    def apply(self, canvas, mouse_x, mouse_y):
+        """Apply the line to the canvas"""
+        if not self.start_pos:
+            return
+        
+        for px, py in self.preview_pixels:
+            if canvas.in_bounds(px, py):
+                canvas.set_pixel(px, py, canvas.current_color)
+        
+        self.start_pos = None
+        self.preview_pixels = []
+
+    def _get_line_pixels(self, x0, y0, x1, y1):
+        """Bresenham's line algorithm"""
+        pixels = []
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+
+        x, y = x0, y0
+        while True:
+            pixels.append((x, y))
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+        
+        return pixels
+
+    def get_preview_color(self):
+        return (0, 100, 200)  # Blue preview for line
+
+    def render_preview(self, screen, mouse_x, mouse_y, canvas):
+        """Render line preview"""
+        if not self.start_pos or not self.preview_pixels:
+            return
+        
+        preview_color = self.get_preview_color()
+        for px, py in self.preview_pixels:
+            if canvas.in_bounds(px, py):
+                rect = pygame.Rect(
+                    canvas.x + px * canvas.pixel_size,
+                    canvas.y + py * canvas.pixel_size,
+                    canvas.pixel_size,
+                    canvas.pixel_size
+                )
+                preview_surface = pygame.Surface((canvas.pixel_size, canvas.pixel_size))
+                preview_surface.set_alpha(150)
+                preview_surface.fill(preview_color)
+                screen.blit(preview_surface, rect.topleft)
+
+
+class RectangleTool(Tool):
+    def __init__(self, size=1, shape="square"):
+        super().__init__("Rectangle", size, shape)
+        self.start_pos = None
+        self.preview_pixels = []
+        self.fill_mode = "hollow"  # "hollow" or "fill"
+
+    def toggle_fill_mode(self):
+        """Toggle between hollow and fill mode"""
+        self.fill_mode = "fill" if self.fill_mode == "hollow" else "hollow"
+    
+    def set_fill_mode(self, mode):
+        """Set fill mode: 'hollow' or 'fill'"""
+        if mode in ["hollow", "fill"]:
+            self.fill_mode = mode
+
+    def start_rectangle(self, canvas, mouse_x, mouse_y):
+        """Start drawing a rectangle"""
+        coords = canvas.get_pixel_coords(mouse_x, mouse_y)
+        if coords:
+            self.start_pos = coords
+            self.preview_pixels = []
+
+    def update_preview(self, canvas, mouse_x, mouse_y):
+        """Update rectangle preview"""
+        if not self.start_pos:
+            return
+        
+        coords = canvas.get_pixel_coords(mouse_x, mouse_y)
+        if not coords:
+            return
+        
+        end_x, end_y = coords
+        start_x, start_y = self.start_pos
+        
+        self.preview_pixels = self._get_rectangle_pixels(start_x, start_y, end_x, end_y)
+
+    def apply(self, canvas, mouse_x, mouse_y):
+        """Apply the rectangle to the canvas"""
+        if not self.start_pos:
+            return
+        
+        for px, py in self.preview_pixels:
+            if canvas.in_bounds(px, py):
+                canvas.set_pixel(px, py, canvas.current_color)
+        
+        self.start_pos = None
+        self.preview_pixels = []
+
+    def _get_rectangle_pixels(self, x0, y0, x1, y1):
+        """Get pixels for rectangle outline or filled"""
+        pixels = []
+        min_x, max_x = min(x0, x1), max(x0, x1)
+        min_y, max_y = min(y0, y1), max(y0, y1)
+        
+        if self.filled:
+            # Filled rectangle
+            for y in range(min_y, max_y + 1):
+                for x in range(min_x, max_x + 1):
+                    pixels.append((x, y))
+        else:
+            # Rectangle outline
+            for x in range(min_x, max_x + 1):
+                pixels.append((x, min_y))  # Top edge
+                pixels.append((x, max_y))  # Bottom edge
+            for y in range(min_y + 1, max_y):
+                pixels.append((min_x, y))  # Left edge
+                pixels.append((max_x, y))  # Right edge
+        
+        return pixels
+
+    def toggle_filled(self):
+        """Toggle between filled and outline rectangle"""
+        self.filled = not self.filled
+
+    def get_preview_color(self):
+        return (200, 100, 0)  # Orange preview for rectangle
+
+    def render_preview(self, screen, mouse_x, mouse_y, canvas):
+        """Render rectangle preview"""
+        if not self.start_pos or not self.preview_pixels:
+            return
+        
+        preview_color = self.get_preview_color()
+        for px, py in self.preview_pixels:
+            if canvas.in_bounds(px, py):
+                rect = pygame.Rect(
+                    canvas.x + px * canvas.pixel_size,
+                    canvas.y + py * canvas.pixel_size,
+                    canvas.pixel_size,
+                    canvas.pixel_size
+                )
+                preview_surface = pygame.Surface((canvas.pixel_size, canvas.pixel_size))
+                preview_surface.set_alpha(150)
+                preview_surface.fill(preview_color)
+                screen.blit(preview_surface, rect.topleft)
+
+
+class EyedropperTool(Tool):
+    def __init__(self, size=1, shape="square"):
+        super().__init__("Eyedropper", size, shape)
+
+    def apply(self, canvas, mouse_x, mouse_y):
+        """Pick color from canvas"""
+        coords = canvas.get_pixel_coords(mouse_x, mouse_y)
+        if not coords:
+            return None
+        
+        px, py = coords
+        if canvas.in_bounds(px, py):
+            color = canvas.pixels.get((px, py), None)
+            if color:
+                canvas.current_color = color
+                return color
+        return None
+
+    def get_preview_color(self):
+        return (100, 200, 100)  # Green preview for eyedropper
+
+    def render_preview(self, screen, mouse_x, mouse_y, canvas):
+        """Render eyedropper preview - just a single pixel"""
+        coords = canvas.get_pixel_coords(mouse_x, mouse_y)
+        if not coords:
+            return
+        px, py = coords
+        
+        if canvas.in_bounds(px, py):
+            rect = pygame.Rect(
+                canvas.x + px * canvas.pixel_size,
+                canvas.y + py * canvas.pixel_size,
+                canvas.pixel_size,
+                canvas.pixel_size
+            )
+            preview_surface = pygame.Surface((canvas.pixel_size, canvas.pixel_size))
+            preview_surface.set_alpha(150)
+            preview_surface.fill(self.get_preview_color())
+            screen.blit(preview_surface, rect.topleft)
+
+
 class ToolManager:
     def __init__(self):
         self.tools = {
             "brush": BrushTool(),
             "eraser": EraserTool(),
-            "fill": FillTool()
+            "fill": FillTool(),
+            "line": LineTool(),
+            "rectangle": RectangleTool(),
+            "eyedropper": EyedropperTool()
         }
         self.current_tool_name = "brush"
     
