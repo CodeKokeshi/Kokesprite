@@ -175,8 +175,9 @@ def apply_tool_with_undo_tracking_at_pixel(canvas, tool, px, py, changes_dict):
     """Apply tool with undo tracking at pixel coordinates"""
     if not canvas.in_bounds(px, py):
         return
-        
-    if tool.name == "Brush":
+    
+    # Treat Line/Rectangle similar to Brush for pixel application
+    if tool.name in ("Brush", "Line", "Rectangle"):
         record_pixel_change(changes_dict, canvas, px, py, canvas.current_color)
         canvas.set_pixel(px, py, canvas.current_color)
     elif tool.name == "Eraser":
@@ -279,7 +280,7 @@ def main():
                         scene = 'new_file'
                     elif open_btn_rect.collidepoint(mouse_pos):
                         # Optional PNG selection (non-functional for now)
-                        if tk and filedialog:
+                        if HAS_TKINTER and tk and filedialog:
                             try:
                                 root = tk.Tk()
                                 root.withdraw()
@@ -386,7 +387,7 @@ def main():
 
                         # Click on current color display to edit selected swatch
                         if palette:
-                            color_display = pygame.Rect(left_rect.x + 10, left_rect.y + left_rect.height - 30, 50, 20)
+                            color_display = pygame.Rect(left_rect.x + 10, left_rect.y + left_rect.height - 45, 44, 22)
                             if color_display.collidepoint(mouse_pos) and colorchooser:
                                 try:
                                     root = tk.Tk(); root.withdraw()
@@ -402,6 +403,16 @@ def main():
                         # Scrollbar dragging start
                         content_w = canvas.width
                         content_h = canvas.height
+                    elif event.button == 3:  # Right click
+                        # Add current color to palette if clicked within palette area
+                        if palette:
+                            pal_rect = pygame.Rect(palette.x - 2, palette.y - 2, palette.width + 4, getattr(palette, 'viewport_height', palette.height) + 4)
+                            if pal_rect.collidepoint(mouse_pos):
+                                try:
+                                    palette.add_color(canvas.current_color)
+                                except Exception:
+                                    pass
+                                continue
                         show_h = content_w > holder_rect.width
                         show_v = content_h > holder_rect.height
                         # Horizontal scrollbar rects
@@ -631,6 +642,15 @@ def main():
                         last_pos = mouse_pos
 
                 elif event.type == pygame.MOUSEWHEEL:
+                    # Scroll palette if mouse over it
+                    if palette:
+                        pal_rect = pygame.Rect(palette.x - 2, palette.y - 2, palette.width + 4, getattr(palette, 'viewport_height', palette.height) + 4)
+                        if pal_rect.collidepoint(mouse_pos):
+                            try:
+                                palette.handle_scroll(-event.y)
+                            except Exception:
+                                pass
+                            continue
                     mods = pygame.key.get_mods()
                     ctrl = mods & pygame.KMOD_CTRL
                     shift = mods & pygame.KMOD_SHIFT
@@ -722,9 +742,14 @@ def main():
                             tool_manager.sync_tool_properties(current_tool.size, current_tool.shape)
                             size_input_text = str(current_tool.size)
                             previous_valid_size = size_input_text
-                        elif event.key == pygame.K_t:  # toggle shape
-                            current_tool.toggle_shape()
-                            tool_manager.sync_tool_properties(current_tool.size, current_tool.shape)
+                        elif event.key == pygame.K_t:  # toggle shape or rectangle fill when Shift held
+                            if shift and tool_manager.current_tool_name == "rectangle":
+                                rect_tool = tool_manager.get_current_tool()
+                                if hasattr(rect_tool, 'toggle_fill_mode'):
+                                    rect_tool.toggle_fill_mode()
+                            else:
+                                current_tool.toggle_shape()
+                                tool_manager.sync_tool_properties(current_tool.size, current_tool.shape)
                         elif event.key == pygame.K_b:  # brush tool
                             tool_manager.set_tool("brush")
                         elif event.key == pygame.K_e:  # eraser tool
@@ -761,18 +786,19 @@ def main():
                             if canvas and canvas.layer_manager and len(canvas.layer_manager.layers) > 1:
                                 canvas.layer_manager.remove_layer(canvas.layer_manager.current_layer_index)
                         elif event.key == pygame.K_F2:  # toggle floating layers window
-                            if canvas:
+                            if canvas and FloatingLayersWindow:
                                 if floating_layers_window and floating_layers_window.running:
                                     floating_layers_window.close_window()
                                     floating_layers_window = None
                                 else:
-                                    floating_layers_window = FloatingLayersWindow(font=font)
-                                    floating_layers_window.create_window()
-                                    floating_layers_window.set_layer_manager(canvas.layer_manager)
-                        elif event.key == pygame.K_t:  # toggle rectangle fill mode
-                            if tool_manager.current_tool_name == "rectangle":
-                                rect_tool = tool_manager.get_current_tool()
-                                rect_tool.toggle_fill_mode()
+                                    try:
+                                        floating_layers_window = FloatingLayersWindow()
+                                        if floating_layers_window.create_window():
+                                            floating_layers_window.set_layer_manager(canvas.layer_manager)
+                                        else:
+                                            floating_layers_window = None
+                                    except Exception:
+                                        floating_layers_window = None
                         elif event.key in (pygame.K_EQUALS, pygame.K_PLUS):
                             # Zoom in
                             pygame.event.post(pygame.event.Event(pygame.MOUSEWHEEL, {'y': 1}))
@@ -784,22 +810,8 @@ def main():
         # Clear screen
         screen.fill(GRAY)
         
-        # Handle floating layers window
+        # Handle floating layers window (Tk)
         if floating_layers_window and floating_layers_window.running:
-            result = floating_layers_window.handle_events()
-            if result["action"] == "close":
-                floating_layers_window = None
-            elif result["action"] == "new_layer" and canvas:
-                canvas.layer_manager.add_layer()
-            elif result["action"] == "duplicate_layer" and canvas:
-                canvas.layer_manager.duplicate_layer()
-            elif result["action"] == "delete_layer" and canvas:
-                if len(canvas.layer_manager.layers) > 1:
-                    canvas.layer_manager.remove_layer(canvas.layer_manager.current_layer_index)
-            elif result["action"] == "merge_down" and canvas:
-                canvas.layer_manager.merge_down(canvas.layer_manager.current_layer_index)
-            
-            # Render the floating window
             floating_layers_window.render()
 
     # Scene-specific rendering
@@ -887,15 +899,21 @@ def main():
             if palette:
                 palette.x = left_rect.x + 10
                 palette.y = left_rect.y + 10
+                # Fit palette into left panel with space for footer
+                try:
+                    pal_view_h = max(40, left_rect.height - 90)
+                    palette.set_viewport_height(pal_view_h)
+                except Exception:
+                    pass
                 palette.render(screen)
                 # Show current color above palette
-                color_display = pygame.Rect(left_rect.x + 10, left_rect.y + left_rect.height - 60, 80, 40)
+                color_display = pygame.Rect(left_rect.x + 10, left_rect.y + left_rect.height - 45, 44, 22)
                 pygame.draw.rect(screen, palette.current_color, color_display)
                 pygame.draw.rect(screen, BLACK, color_display, 2)
                 
                 # Add text label
                 color_text = font.render("Current Color", True, BLACK)
-                screen.blit(color_text, (left_rect.x + 10, left_rect.y + left_rect.height - 100))
+                screen.blit(color_text, (left_rect.x + 10, left_rect.y + left_rect.height - 70))
             
             # Add floating layers hint
             if not floating_layers_window or not floating_layers_window.running:
