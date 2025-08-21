@@ -16,6 +16,12 @@ class PixelCanvas:
         self.height = height
         self.pixels = {}  # Dictionary to store colored pixels
         self.current_color = BLACK
+
+    def set_pixel_size(self, new_size):
+        """Update zoom level (pixel size), adjusting render width/height."""
+        self.pixel_size = max(1, int(new_size))
+        self.width = self.canvas_width * self.pixel_size
+        self.height = self.canvas_height * self.pixel_size
     
     def in_bounds(self, pixel_x, pixel_y):
         return 0 <= pixel_x < self.canvas_width and 0 <= pixel_y < self.canvas_height
@@ -67,3 +73,24 @@ class PixelCanvas:
                 self.pixel_size
             )
             pygame.draw.rect(screen, color, rect)
+
+    def render_to_surface(self):
+        """Render the canvas onto an offscreen surface and return it.
+        Rendering starts at (0,0) regardless of self.x/self.y.
+        """
+        surface = pygame.Surface((self.width, self.height))
+        # Background
+        surface.fill(WHITE)
+        pygame.draw.rect(surface, BLACK, pygame.Rect(0, 0, self.width, self.height), 2)
+
+        # Grid
+        for x in range(0, self.width + 1, self.pixel_size):
+            pygame.draw.line(surface, LIGHT_GRAY, (x, 0), (x, self.height))
+        for y in range(0, self.height + 1, self.pixel_size):
+            pygame.draw.line(surface, LIGHT_GRAY, (0, y), (self.width, y))
+
+        # Pixels
+        for (px, py), color in self.pixels.items():
+            rect = pygame.Rect(px * self.pixel_size, py * self.pixel_size, self.pixel_size, self.pixel_size)
+            pygame.draw.rect(surface, color, rect)
+        return surface
